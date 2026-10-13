@@ -60,16 +60,19 @@ def load_model(model_id=MODEL_ID):
     import torch
     from transformers import AutoProcessor, BitsAndBytesConfig, Qwen3VLForConditionalGeneration
 
+    # transformers 5.x so khớp skip-module bằng re.match (neo ở ĐẦU tên module), nên "visual" không
+    # khớp "model.visual.merger..." -> phải ghi cả tiền tố "model.visual"
     quant = BitsAndBytesConfig(
         load_in_4bit=True, bnb_4bit_quant_type="nf4", bnb_4bit_compute_dtype=torch.float16,
-        bnb_4bit_use_double_quant=True, llm_int8_skip_modules=["visual", "lm_head"])
+        bnb_4bit_use_double_quant=True, llm_int8_skip_modules=["model.visual", "visual", "lm_head"])
     model = Qwen3VLForConditionalGeneration.from_pretrained(
         model_id, quantization_config=quant, dtype=torch.float16, device_map={"": 0})
     processor = AutoProcessor.from_pretrained(model_id)
     processor.tokenizer.padding_side = "left"
     # ViT + projector phải ở fp16 (không lượng tử) thì mới huấn luyện đầy đủ projector được
-    w = model.model.visual.merger.linear_fc1.weight
-    assert w.dtype == torch.float16, f"visual.merger bị lượng tử hoá ({w.dtype})"
+    for name in ("merger.linear_fc1", "blocks.0.attn.qkv"):
+        w = model.model.visual.get_submodule(name).weight
+        assert w.dtype == torch.float16, f"visual.{name} bị lượng tử hoá ({w.dtype})"
     return model, processor
 
 
