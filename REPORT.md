@@ -36,7 +36,13 @@ Khối được cập nhật:
 
 Model gốc đã dùng đúng thang 0–1000: các cặp khớp có mean IoU 0.606. Nếu model trả pixel thì gần như không có cặp nào đạt IoU ≥ 0.5.
 
-Ví dụ output thô: <điền: dán 1 output hỏng và 1 output bịa box từ ô "Xem output thô" ở mục 3>
+Ví dụ output thô:
+- Hỏng (ảnh `vlcsnap-2025-02-18-23h15m35s771`), bị cắt ở `max_new_tokens=384`:
+  `[{"label": "crack", "bbox_2d": [557, 370, 600, 400]}, {"label": "crack", "bbox_2d": [557, 390, 600, 420]}, {"label": "crack", "bbox_2d": [557, 410, 600, 440]}, {"label": "crack", "bbox_2d": [557, 430, 600, 460]}, ... {"label": "crack", "bbox_2d": [557`
+  Model rơi vào **vòng lặp suy biến**: sinh mãi một box crack cùng x, mỗi lần dịch y thêm 20, cho tới khi hết token nên JSON không đóng `]`. Ảnh `vlcsnap-2025-02-18-23h15m38s268` cũng y hệt (x 550–600, bước 40). Kiểu lỗi này vừa làm hỏng JSON vừa cho thấy xu hướng "bịa" hàng loạt box crack của model gốc.
+- Hợp lệ: `vlcsnap-00200` → `[{"label": "crack", "bbox_2d": [750, 634, 850, 684]}]`, `vlcsnap-00201` → `[]`, `vlcsnap-00202` → `[{"label": "manhole", "bbox_2d": [307, 687, 399, 719]}]`. Định dạng đúng, đúng thang 0–1000; box có khớp nhãn hay không thì phải chấm IoU.
+
+Sau finetune, model học được lúc nào phát `<|im_end|>` (loss được tính cả trên token này), nên `parse_valid_rate` tăng lên 0.990 (E1) và 0.997 (E2).
 
 ### Câu 3 — Thang 0–1000: nếu chấm output theo pixel (hoặc ngược lại) thì F1 ra sao và vì sao? Bạn đã kiểm chứng điều này thế nào?
 Qwen3-VL được huấn luyện grounding với toạ độ tương đối 0–1000, không phụ thuộc kích thước ảnh sau khi resize. Nếu đọc output 0–1000 như pixel của ảnh 640×360, `score.py --coord pixel` sẽ nhân x với 1000/640 = 1.56 và y với 1000/360 = 2.78. Box bị kéo giãn và dịch về phía dưới-phải, nên IoU với box thật gần như luôn < 0.5. Kết quả là F1 ≈ 0 dù JSON vẫn hợp lệ: đúng triệu chứng "F1 ≈ 0 mà JSON hợp lệ" trong GUIDE. Ngược lại, nếu train/prompt theo pixel mà chấm như 0–1000, box bị co lại về góc trên-trái và cũng hỏng.
@@ -44,7 +50,7 @@ Qwen3-VL được huấn luyện grounding với toạ độ tương đối 0–
 Kiểm chứng:
 1. Ở mục 2, đổi nhãn YOLO → 0–1000 rồi quy ngược về pixel; box trùng box gốc (sai số làm tròn ≤ 1 px).
 2. E0 chấm theo `norm1000` có mean IoU 0.606 trên các cặp khớp, chứng tỏ model gốc đã nói "thang 0–1000".
-3. Chấm lại dự đoán E1 với `--coord pixel`: F1 = <điền: chạy `!python scripts/score.py --pred work/e1/pred_test.jsonl --name E1-pixel --coord pixel --splits-dir {DATA_DIR}/splits --out work/e1/score_pixel.json` và ghi F1> so với 0.259 khi chấm đúng thang.
+3. Chấm lại **cùng file dự đoán của E2** với `--coord pixel` (coi output 0–1000 như pixel): F1 = **0.000**, P = R = 0, mean IoU = 0, so với **F1 0.312** khi chấm đúng `norm1000`. `parse_valid_rate` vẫn là 0.997, vì JSON không đổi, chỉ cách hiểu toạ độ đổi. FP/ảnh tăng từ 1.17 lên **1.73**: cả 175 TP trước đó đều biến thành FP, (364 + 175) / 311 = 1.73. Như vậy chỉ một sai lệch quy ước thang toạ độ cũng đủ biến model tốt nhất thành vô dụng, trong khi mọi chỉ số định dạng vẫn trông bình thường.
 
 ### Câu 4 — Mask loss: vì sao chỉ tính loss trên phần trả lời? Điều gì xảy ra nếu tính trên cả prompt và token ảnh?
 Với ảnh 640×360, một chuỗi huấn luyện gồm **220 token ảnh** + **127 token prompt** + vài token của chat template ≈ 360 token đầu vào. Câu trả lời trung bình chỉ khoảng 70 token (≈ 29 token mỗi box × 2,4 box/ảnh, cộng `<|im_end|>`). Như vậy phần trả lời chỉ chiếm khoảng 16% chuỗi. `encode_example` đặt `labels = -100` cho toàn bộ tiền tố prompt (đã kiểm tra prompt đúng là tiền tố của chuỗi đầy đủ), nên loss chỉ tính trên JSON và `<|im_end|>`.
@@ -106,7 +112,27 @@ Mọi chênh lệch dưới khoảng 0.05 F1 giữa các setup (bao gồm E3 và
 - **Crack:** kém về **precision** (E1: 359/447 FP là crack). Vết nứt mảnh, dài, ranh giới mơ hồ. Một vết nứt dài có thể được gán nhãn là 1 box hoặc nhiều box nhỏ, nên dù model "thấy" đúng vết nứt, IoU ≥ 0.5 rất khó đạt. Vạch sơn, khe nối mặt đường và bóng cũng trông giống vết nứt.
 - **Pothole:** kém về **recall** (0.198 ở E2). Box rất nhỏ: diện tích trung vị ≈ 0,7% khung hình ≈ 40×40 px trên ảnh 640×360. Mỗi token ảnh ứng với một ô 32×32 px, nên một ổ gà nhỏ chỉ chiếm 1–2 token. Ổ gà còn dễ lẫn với vá đường, vũng nước, bóng râm.
 
-Ảnh minh hoạ: <điền: chèn ≥ 6 ảnh từ `report/figures/` (mục 7, `save_examples`), mỗi ảnh một dòng chú thích; xanh lá = box đúng, màu khác = box dự đoán>
+Ảnh minh hoạ (E2 trên test; **xanh lá = nhãn đúng**, đỏ = pothole, vàng = crack, xanh dương = manhole dự đoán; tiêu đề ghi TP/FP/FN của ảnh):
+
+![](report/figures/e2_dung_vlcsnap-2025-02-18-23h13m50s113.jpg)
+*Đúng (TP=2): hai nắp cống/song chắn rác hình chữ nhật, box dự đoán gần như trùng nhãn.*
+
+![](report/figures/e2_dung_vlcsnap-2025-02-18-23h13m52s540.jpg)
+*Đúng (TP=2): cùng hai nắp cống, frame cách ảnh trên khoảng 2 giây.*
+
+![](report/figures/e2_dung_vlcsnap-2025-02-18-23h13m55s630.jpg)
+*Đúng (TP=2): vẫn cảnh đó thêm 3 giây sau. Cả 3 ảnh "đúng" đều thuộc cùng phiên `23h13m` và gần như trùng nhau. Đây chính là lý do phải chia split theo phiên (câu 6): nếu chia ngẫu nhiên, các frame anh em này sẽ nằm ở cả train lẫn test.*
+
+![](report/figures/e2_sai_vlcsnap-2025-02-18-23h26m05s423.jpg)
+*Sai (TP=0, FP=5, FN=5): model dự đoán đúng **vùng** hư hại (3 crack, 1 manhole, 1 pothole nằm chồng lên các box nhãn) nhưng phạm vi box lệch: chỗ thì to hơn, chỗ thì dịch sang bên. Không cặp nào đạt IoU ≥ 0.5, nên một ảnh "gần đúng" bị tính 5 FP + 5 FN.*
+
+![](report/figures/e2_sai_vlcsnap-2025-02-19-17h03m28s017.jpg)
+*Sai (TP=0, FP=4, FN=5): các ổ gà rất nhỏ ở xa. Model tìm đúng 4 vị trí nhưng box dự đoán lớn gấp 2–3 lần box nhãn, nên IoU < 0.5. Ổ gà thứ 5 bị sót. Minh hoạ lý do recall pothole thấp: box chỉ vài chục pixel, tương đương 1–2 token ảnh.*
+
+![](report/figures/e2_sai_vlcsnap-2025-02-19-17h08m59s876.jpg)
+*Sai (TP=0, FP=4, FN=5): một mảng mặt đường vỡ lớn. Nhãn gốc chia thành 5 box (một box rộng phía dưới và nhiều box con), còn model chia thành 4 box theo cách khác. Ranh giới "một hư hại" là mơ hồ, nên IoU không đạt dù model nhìn đúng chỗ.*
+
+Nhận xét chung: ở cả 3 ảnh sai, model **không nhìn nhầm chỗ** mà sai ở **độ chính xác của box** (to/nhỏ, gộp/tách) so với ngưỡng IoU 0.5. Vì vậy F1@0.5 đánh giá thấp model với các lớp có ranh giới mơ hồ (crack, mảng vỡ) hoặc box rất nhỏ (pothole).
 
 ### Câu 10 — E4: bạn đổi biến nào, kết quả thế nào, và kết luận có đáng tin không?
 <điền sau khi chạy E4>
