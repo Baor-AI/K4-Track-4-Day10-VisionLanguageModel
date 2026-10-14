@@ -10,10 +10,10 @@ Môi trường: Google Colab, Tesla T4 16 GB, QLoRA NF4 (ViT + projector + `lm_h
 | E0 | zero-shot | 0 | – | – | 0.094 | 0.068–0.123 | 0.85 | 0.108 | 0.049 | 0.181 |
 | E1 | LoRA LLM | 33,030,144 | 6.52 | 52.2 | 0.259 | 0.225–0.298 | 1.44 | 0.169 | 0.177 | 0.554 |
 | E2 | + projector | 142,135,296 | 8.22 | 47.6 | 0.312 | 0.273–0.351 | 1.17 | 0.208 | 0.242 | 0.559 |
-| E3 | + LoRA ViT | <điền sau khi chạy E3> | | | | | | | | |
+| E3 | + LoRA ViT | 148,426,752 | 8.39 | 51.9 | 0.405 | 0.362–0.446 | 1.11 | 0.305 | 0.311 | 0.685 |
 | E4 | <điền: biến và giá trị> | | | | | | | | | |
 
-`parse_valid_rate`: E0 0.968 · E1 0.990 · E2 0.997. Mean IoU của các cặp khớp: E0 0.606 · E1 0.670 · E2 0.666.
+`parse_valid_rate`: E0 0.968 · E1 0.990 · E2 0.997 · E3 1.000. Mean IoU của các cặp khớp: E0 0.606 · E1 0.670 · E2 0.666 · E3 0.691.
 
 ## 10 câu hỏi (trả lời bằng **số của bạn**, không chép lại tài liệu)
 
@@ -26,7 +26,7 @@ Môi trường: Google Colab, Tesla T4 16 GB, QLoRA NF4 (ViT + projector + `lm_h
 Khối được cập nhật:
 - **E1**: chỉ LoRA r=16 trên LLM, ở `q,k,v,o_proj` và `gate,up,down_proj` của 36 lớp = 252 module. Số tham số huấn luyện **33,030,144** khớp đúng công thức 36 × 16 × [(2560+4096)·2 + (2560+1024)·2 + (2560+9728)·3] = 36 × 917,504. Chỉ bằng 0.74% model; ViT và projector đóng băng.
 - **E2**: E1 + mở toàn bộ projector, tổng **142,135,296**. Phần chênh so với E1 là 109,105,152, đúng bằng merger + deepstack merger.
-- **E3**: E2 + LoRA trên 24 khối ViT (`attn.qkv`, `attn.proj`, `mlp.linear_fc1/2` = 96 module, tổng 348 module LoRA). <điền: số tham số huấn luyện E3 từ e3.json>
+- **E3**: E2 + LoRA trên 24 khối ViT (`attn.qkv`, `attn.proj`, `mlp.linear_fc1/2` = 96 module, tổng 348 module LoRA), tổng **148,426,752**. Phần chênh so với E2 là 6,291,456 = 24 × 16 × [(1024+3072) + (1024+1024) + (1024+4096)·2] = 24 × 262,144, khớp đúng LoRA trên ViT (hidden 1024, MLP 4096). Chỉ thêm 4.4% tham số so với E2, vì ViT nhỏ hơn LLM gần 10 lần.
 
 ### Câu 2 — E0: `parse_valid_rate` bằng bao nhiêu, và hai lỗi phổ biến nhất của model gốc là gì (kèm một ví dụ output thô)?
 `parse_valid_rate` của E0 = **0.968** (10/311 output không parse được). Như vậy định dạng JSON không phải vấn đề chính; vấn đề chính là **nội dung box**:
@@ -42,7 +42,7 @@ Ví dụ output thô:
   Model rơi vào **vòng lặp suy biến**: sinh mãi một box crack cùng x, mỗi lần dịch y thêm 20, cho tới khi hết token nên JSON không đóng `]`. Ảnh `vlcsnap-2025-02-18-23h15m38s268` cũng y hệt (x 550–600, bước 40). Kiểu lỗi này vừa làm hỏng JSON vừa cho thấy xu hướng "bịa" hàng loạt box crack của model gốc.
 - Hợp lệ: `vlcsnap-00200` → `[{"label": "crack", "bbox_2d": [750, 634, 850, 684]}]`, `vlcsnap-00201` → `[]`, `vlcsnap-00202` → `[{"label": "manhole", "bbox_2d": [307, 687, 399, 719]}]`. Định dạng đúng, đúng thang 0–1000; box có khớp nhãn hay không thì phải chấm IoU.
 
-Sau finetune, model học được lúc nào phát `<|im_end|>` (loss được tính cả trên token này), nên `parse_valid_rate` tăng lên 0.990 (E1) và 0.997 (E2).
+Sau finetune, model học được lúc nào phát `<|im_end|>` (loss được tính cả trên token này), nên `parse_valid_rate` tăng lên 0.990 (E1), 0.997 (E2) và 1.000 (E3).
 
 ### Câu 3 — Thang 0–1000: nếu chấm output theo pixel (hoặc ngược lại) thì F1 ra sao và vì sao? Bạn đã kiểm chứng điều này thế nào?
 Qwen3-VL được huấn luyện grounding với toạ độ tương đối 0–1000, không phụ thuộc kích thước ảnh sau khi resize. Nếu đọc output 0–1000 như pixel của ảnh 640×360, `score.py --coord pixel` sẽ nhân x với 1000/640 = 1.56 và y với 1000/360 = 2.78. Box bị kéo giãn và dịch về phía dưới-phải, nên IoU với box thật gần như luôn < 0.5. Kết quả là F1 ≈ 0 dù JSON vẫn hợp lệ: đúng triệu chứng "F1 ≈ 0 mà JSON hợp lệ" trong GUIDE. Ngược lại, nếu train/prompt theo pixel mà chấm như 0–1000, box bị co lại về góc trên-trái và cũng hỏng.
@@ -59,7 +59,7 @@ Nếu tính loss cả trên prompt và token ảnh:
 - **Lãng phí gradient:** khoảng 84% token là thứ model không bao giờ phải sinh ra. Prompt giống hệt nhau ở mọi mẫu nên loss của nó nhanh chóng ≈ 0. Các token `<|image_pad|>` là placeholder, việc "dự đoán" chúng là vô nghĩa. Loss trung bình trông giảm đẹp nhưng tín hiệu học toạ độ bị pha loãng.
 - **Học sai hành vi:** model có thể học lặp lại prompt, gây hại cho định dạng output.
 
-Tính loss trên `<|im_end|>` giúp model học **dừng đúng lúc**. `parse_valid_rate` tăng từ 0.968 (E0) lên 0.990 (E1) và 0.997 (E2).
+Tính loss trên `<|im_end|>` giúp model học **dừng đúng lúc**. `parse_valid_rate` tăng từ 0.968 (E0) lên 0.990 (E1), 0.997 (E2) và 1.000 (E3).
 
 ### Câu 5 — Vì sao không thể huấn luyện đầy đủ projector nếu ViT bị lượng tử hoá 4-bit, và bạn đã xử lý thế nào? Vì sao projector phải ở float32?
 Lớp NF4 của bitsandbytes lưu trọng số ở dạng nén 4-bit (tensor `uint8` + hằng số lượng tử). Đó không phải tham số thực nên không có gradient và không cập nhật trực tiếp được; với lớp 4-bit chỉ gắn được LoRA. Projector nằm trong `visual`. Nếu `visual` bị lượng tử thì `merger.linear_fc1/2` thành `uint8`, và E2 không thể "mở đầy đủ" projector.
@@ -93,14 +93,24 @@ Cái giá: tham số huấn luyện gấp 4.3 lần (33.0M → 142.1M), VRAM đ�
 
 Tuy vậy, CI95 của E1 [0.225, 0.298] và của E2 [0.273, 0.351] **chồng nhau** trên đoạn 0.273–0.298. Vì vậy chưa thể khẳng định chắc chắn E2 tốt hơn E1 trên tập test 311 ảnh. Xu hướng thì nhất quán: precision, recall và F1 của cả pothole lẫn crack đều tăng. Với T4 còn dư VRAM, mở projector là lựa chọn rẻ và đáng thử.
 
-**E2 → E3 (LoRA ViT):** <điền sau khi chạy E3: F1, CI95, VRAM, thời gian và kết luận có đáng không>
+**E2 → E3 (LoRA ViT):**
+- F1 tăng từ **0.312 lên 0.405** (+0.093), lớn nhất trong các bước E1 → E2 → E3.
+- Cải thiện chủ yếu ở **recall**: 0.300 → 0.405 (TP 175 → 236), trong khi FP gần như giữ nguyên (364 → 346, FP/ảnh 1.17 → 1.11). Mean IoU của các cặp khớp cũng tăng (0.666 → 0.691), tức box chính xác hơn.
+- Tăng ở cả ba lớp: pothole 0.208 → **0.305** (recall 0.198 → 0.322), crack 0.242 → 0.311, manhole 0.559 → 0.685 (recall 0.466 → 0.626).
+
+Cái giá rất nhỏ: chỉ thêm 6.3M tham số (+4.4%), VRAM đỉnh +0.17 GB (8.22 → 8.39 GB), thời gian +4.3 phút (47.6 → 51.9 phút, cùng mức biến động giữa các phiên Colab).
+
+Lần này CI95 của E2 [0.273, 0.351] và E3 [0.362, 0.446] **không chồng nhau** (cận trên E2 thấp hơn cận dưới E3). Đây là cải thiện có thể khẳng định trên tập test 311 ảnh.
+
+Giải thích: ViT gốc được tiền huấn luyện trên ảnh tổng quát, không phải để phân biệt ổ gà nhỏ, vết nứt mảnh với vá đường, bóng râm. Projector (E2) chỉ có thể sắp xếp lại đặc trưng mà ViT đã trích; LoRA trên ViT (E3) cho phép **đổi chính đặc trưng thị giác**. Recall pothole tăng mạnh nhất, khớp với nhận định ở câu 9 rằng lỗi của pothole nằm ở chỗ box quá nhỏ để đặc trưng gốc "thấy". **Kết luận: LoRA trên ViT rất đáng**, với chi phí gần như không đáng kể trên T4.
 
 ### Câu 8 — Tập test có 311 ảnh: khoảng tin cậy rộng thế nào, và điều đó giới hạn kết luận so sánh các setup ra sao?
-CI95 bootstrap theo ảnh (1000 lần) có độ rộng: E0 0.055 (0.068–0.123), E1 0.072 (0.225–0.298), E2 0.078 (0.273–0.351). Tức là khoảng ±0.035–0.04 quanh F1.
+CI95 bootstrap theo ảnh (1000 lần) có độ rộng: E0 0.055 (0.068–0.123), E1 0.072 (0.225–0.298), E2 0.078 (0.273–0.351), E3 0.084 (0.362–0.446). Tức là khoảng ±0.035–0.04 quanh F1.
 
 Hệ quả:
 - **E1 so với E0:** chênh +0.164, CI hoàn toàn tách rời (cận trên E0 là 0.123, cận dưới E1 là 0.225). Kết luận "finetune giúp rất nhiều" là chắc chắn.
 - **E2 so với E1:** chênh +0.053, nhỏ hơn độ rộng một CI, và hai CI chồng nhau. Chỉ nói được "E2 có xu hướng tốt hơn", không khẳng định được. Muốn chắc hơn cần bootstrap **ghép cặp** (cùng mẫu ảnh cho cả hai model), nhiều seed, hoặc test lớn hơn.
+- **E3 so với E2:** chênh +0.093, lớn hơn độ rộng một CI, và hai CI tách rời (0.351 < 0.362). Kết luận "LoRA ViT giúp" là đáng tin.
 - **Theo từng lớp còn kém tin cậy hơn:** test chỉ có 121 pothole, nên ±1–2 TP đã làm F1 pothole dao động vài điểm.
 
 Mọi chênh lệch dưới khoảng 0.05 F1 giữa các setup (bao gồm E3 và E4) nên coi là chưa phân biệt được.
